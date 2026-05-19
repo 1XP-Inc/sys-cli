@@ -16,7 +16,7 @@ user service와 system service를 자동으로 감지하고, 번호 ID로 짧게
 ## 설치
 
 ```bash
-git clone <repo-url> ~/sys-cli
+git clone https://github.com/1XP-Inc/sys-cli.git ~/sys-cli
 cd ~/sys-cli
 ./install.sh
 source ~/.bashrc
