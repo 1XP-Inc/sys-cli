@@ -41,12 +41,8 @@ if ! command -v ccze >/dev/null 2>&1; then
   if [[ "$ans" =~ ^[Yy]$ ]]; then
     if command -v apt >/dev/null 2>&1; then
       sudo apt update && sudo apt install -y ccze
-    elif command -v dnf >/dev/null 2>&1; then
-      sudo dnf install -y ccze
-    elif command -v brew >/dev/null 2>&1; then
-      brew install ccze
     else
-      echo "패키지 매니저를 못 찾아서 ccze 설치는 건너뜁니다."
+      echo "apt를 못 찾아서 ccze 설치를 건너뜁니다. 수동으로 설치하세요."
     fi
   fi
 else
