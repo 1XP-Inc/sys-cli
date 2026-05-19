@@ -31,10 +31,10 @@ sys_help() {
   echo ""
   echo "EXAMPLES:"
   echo "    sys ls                       # 전체 서비스 목록"
-  echo "    sys status bera-beacond      # 단일 서비스 상태"
+  echo "    sys status <UNIT Name>      # 단일 서비스 상태"
   echo "    sys status 1                 # 1번 서비스 상태"
-  echo "    sys restart bera-reth        # 단일 서비스 재시작"
-  echo "    sys log bera-beacond         # 단일 서비스 로그 tail"
+  echo "    sys restart <UNIT Name>        # 단일 서비스 재시작"
+  echo "    sys log <UNIT Name>         # 단일 서비스 로그 tail"
   echo "    sys daemon                   # .service 수정 후 reload"
 }
 
