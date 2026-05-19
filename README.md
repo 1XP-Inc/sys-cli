@@ -72,12 +72,23 @@ sys daemon                  # .service 파일 수정 후 reload
 
 설치 시 자동 생성되는 설정 파일에서 동작을 커스터마이즈할 수 있습니다.
 
+### 편집 방법
+
+```bash
+nano ~/.config/sys-cli/config
+# 또는 vim, code 등 본인이 편한 에디터 사용
+```
+
+예시 내용:
+
 ```bash
 # ~/.config/sys-cli/config
 
 # sys ls 에서 함께 표시할 system service들 (user service는 자동 표시)
 SYS_WATCH=(prometheus grafana-server node_exporter)
 ```
+
+저장 후 별도의 source/reload 없이 다음 `sys` 명령 실행 시 바로 반영됩니다.
 
 설정 파일은 업데이트(install.sh 재실행) 시 **덮어쓰이지 않습니다**. 따라서 안심하고 본인 환경에 맞게 수정해도 됩니다.
 
