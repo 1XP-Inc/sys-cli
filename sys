@@ -44,6 +44,67 @@ sys_help() {
   echo "    ~/.config/sys-cli/config 에서 SYS_WATCH 등을 설정할 수 있습니다."
 }
 
+# 한 섹션 출력: 헤더 + 정렬된 데이터 + 번호 ID
+# 사용법: print_section "USER SERVICES" "scope" "${services[@]}"
+# scope: "--user" 또는 "" (system)
+print_section() {
+  local title="$1"
+  local scope="$2"
+  shift 2
+  local services=("$@")
+  local use_sudo=""
+  [[ "$scope" != "--user" ]] && use_sudo="sudo"
+
+  [[ ${#services[@]} -eq 0 ]] && return
+
+  echo "   === $title ==="
+
+  # systemctl을 한 번만 호출해서 정렬된 출력 받기
+  local output
+  output=$($use_sudo systemctl $scope list-units --all "${services[@]/%/.service}" 2>/dev/null)
+
+  # 첫 줄 = 헤더, 빈 줄 전까지가 데이터
+  local header=""
+  local -A status_lines
+  local found_empty=false
+  while IFS= read -r line; do
+    if [[ -z "$header" ]]; then
+      header="$line"
+      continue
+    fi
+    if [[ -z "${line// }" ]]; then
+      found_empty=true
+      break
+    fi
+    local name
+    name=$(echo "$line" | awk '{print $1}')
+    status_lines[$name]="$line"
+  done <<< "$output"
+
+  # 헤더 출력 (ID 컬럼 추가)
+  if [[ -n "$header" ]]; then
+    local header_stripped="${header#  }"
+    printf "  %3s %s\n" "ID" "$header_stripped"
+  fi
+
+  # 데이터 출력 (번호 + systemctl 정렬된 라인)
+  local s line line_stripped unit
+  for s in "${services[@]}"; do
+    echo "$s" >> "$SYS_STATE"
+    unit="${s}.service"
+    line="${status_lines[$unit]:-}"
+    if [[ -n "$line" ]]; then
+      line_stripped="${line#  }"
+      printf "  %2d) %s\n" "$IDX" "$line_stripped"
+    else
+      printf "  %2d) %s.service (not loaded)\n" "$IDX" "$s"
+    fi
+    ((IDX++))
+  done
+
+  echo
+}
+
 cmd="$1"
 target="$2"
 
@@ -56,7 +117,7 @@ fi
 if [[ "$cmd" == "l" || "$cmd" == "ls" || "$cmd" == "list" ]]; then
   mkdir -p "$(dirname "$SYS_STATE")"
   > "$SYS_STATE"
-  idx=1
+  IDX=1
 
   # User services (본인이 ~/.config/systemd/user/ 에 만든 것만)
   user_services=()
@@ -66,35 +127,9 @@ if [[ "$cmd" == "l" || "$cmd" == "ls" || "$cmd" == "list" ]]; then
     done
   fi
 
-  if [[ ${#user_services[@]} -gt 0 ]]; then
-    echo "=== USER SERVICES ==="
-    for s in "${user_services[@]}"; do
-      echo "$s" >> "$SYS_STATE"
-      line=$(systemctl --user list-units --all --no-legend "${s}.service" 2>/dev/null | head -1)
-      if [[ -n "$line" ]]; then
-        printf "  %2d) %s\n" "$idx" "$line"
-      else
-        printf "  %2d) %s.service (not loaded)\n" "$idx" "$s"
-      fi
-      ((idx++))
-    done
-    echo
-  fi
+  print_section "USER SERVICES" "--user" "${user_services[@]}"
+  print_section "SYSTEM SERVICES (watched)" "" "${SYS_WATCH[@]}"
 
-  # System services from SYS_WATCH
-  if [[ ${#SYS_WATCH[@]} -gt 0 ]]; then
-    echo "=== SYSTEM SERVICES (watched) ==="
-    for s in "${SYS_WATCH[@]}"; do
-      echo "$s" >> "$SYS_STATE"
-      line=$(sudo systemctl list-units --all --no-legend "${s}.service" 2>/dev/null | head -1)
-      if [[ -n "$line" ]]; then
-        printf "  %2d) %s\n" "$idx" "$line"
-      else
-        printf "  %2d) %s.service (not loaded)\n" "$idx" "$s"
-      fi
-      ((idx++))
-    done
-  fi
   exit 0
 fi
 
