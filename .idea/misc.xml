@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AIAssistantCustomInstructionsStorage">
+    <option name="instructions">
+      <map>
+        <entry key="AIAssistant.General.ProjectPrompt">
+          <value>
+            <AIAssistantStoredInstruction>
+              <option name="actionId" value="AIAssistant.General.ProjectPrompt" />
+              <option name="content" value="Avoid overly verbose descriptions or unnecessary details.&#10;Use short sentences in imperative form thats no more than 100 characters long to describe each change in Korean&#10;for each change start on a new line.&#10;prefix the sentence with a +  for any new additions, a -  for any removed parts, and a #  for any fixes. add a space after the prefix and before the sentence" />
+            </AIAssistantStoredInstruction>
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+</project>
