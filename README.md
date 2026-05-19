@@ -61,12 +61,33 @@ sys status execution        # execution 서비스 상태
 sys status 1                # 1번 서비스 (sys ls의 번호 사용)
 sys restart execution       # execution 재시작
 sys restart 2               # 2번 서비스 재시작
-sys log consensus           # consensus 로그 실시간 tail
+sys log consensus           # consensus 실시간 로그 tail
 sys log 1                   # 1번 서비스 로그
 sys daemon                  # .service 파일 수정 후 reload
 ```
 
 서비스 이름은 **정확히 일치**해야 하며, `.service` 확장자는 생략 가능합니다 (`sys status consensus`와 `sys status consensus.service` 둘 다 동작).
+
+### 로그 옵션 (`sys log`)
+
+`sys log <name>` 뒤에 journalctl 옵션을 자유롭게 추가할 수 있습니다.
+
+```bash
+sys log consensus -n 100              # 최근 100줄부터 tail (실시간)
+sys log consensus --head 100          # 시작부터 100줄 (스냅샷, 실시간 안 함)
+sys log consensus -n 100 -g ERROR     # 100줄 + ERROR 패턴 필터
+sys log consensus | grep "block"      # shell pipe도 가능
+```
+
+자주 쓰는 옵션:
+
+| 옵션 | 설명 |
+|---|---|
+| `-n N`, `--lines N` | 마지막 N줄부터 시작 (실시간 tail 유지) |
+| `--head N` | 시작부터 N줄만 보기 (스냅샷, 실시간 안 함) |
+| `-g PATTERN`, `--grep PATTERN` | 정규식 패턴 필터 (case-insensitive) |
+
+`--head`를 제외한 옵션은 모두 journalctl에 그대로 전달되니, 필요하면 `--since`, `-p` 같은 journalctl 옵션도 자유롭게 사용 가능합니다. 기본적으로 `-f -o cat`이 적용되어 PM2처럼 메타데이터 없이 깔끔하게 실시간 출력됩니다 (`--head` 사용 시는 실시간 모드 꺼짐).
 
 ## 설정 (`~/.config/sys-cli/config`)
 

@@ -33,12 +33,21 @@ sys_help() {
   echo "    예: sys status 1   → sys ls의 1번 서비스 상태"
   echo ""
   echo "EXAMPLES:"
-  echo "    sys ls                       # 전체 서비스 목록"
-  echo "    sys status bera-beacond      # 단일 서비스 상태"
-  echo "    sys status 1                 # 1번 서비스 상태"
-  echo "    sys restart bera-reth        # 단일 서비스 재시작"
-  echo "    sys log bera-beacond         # 단일 서비스 로그 tail"
-  echo "    sys daemon                   # .service 수정 후 reload"
+  echo "    sys ls                                # 전체 서비스 목록"
+  echo "    sys status bera-beacond               # 단일 서비스 상태"
+  echo "    sys status 1                          # 1번 서비스 상태"
+  echo "    sys restart bera-reth                 # 단일 서비스 재시작"
+  echo "    sys log bera-beacond                  # 실시간 로그 tail"
+  echo "    sys log bera-beacond -n 100           # 최근 100줄부터 tail"
+  echo "    sys log bera-beacond --head 100       # 시작부터 100줄 (스냅샷)"
+  echo "    sys log bera-beacond -n 100 -g ERROR  # ERROR만 필터링"
+  echo "    sys daemon                            # .service 수정 후 reload"
+  echo ""
+  echo "LOG OPTIONS:"
+  echo "        -n, --lines N            마지막 N줄부터 시작 (실시간 tail 유지)"
+  echo "        --head N                 시작부터 N줄만 보기 (스냅샷)"
+  echo "        -g, --grep PATTERN       정규식 패턴으로 필터"
+  echo "    그 외 journalctl 옵션도 그대로 통과됨 (--since, -p 등)"
   echo ""
   echo "CONFIG:"
   echo "    ~/.config/sys-cli/config 에서 SYS_WATCH 등을 설정할 수 있습니다."
@@ -186,10 +195,42 @@ case "$cmd" in
   stop)       $use_sudo systemctl $scope_flag stop "$match" ;;
   restart|r)  $use_sudo systemctl $scope_flag restart "$match" ;;
   log|logs)
-    if command -v ccze >/dev/null 2>&1; then
-      $use_sudo journalctl $scope_flag -f -u "$match" | ccze -A
+    # 추가 인자(journalctl 옵션들)는 그대로 통과
+    extra_args=("${@:3}")
+    head_count=""
+    filtered_args=()
+
+    # --head N 옵션 추출 (있으면 snapshot 모드)
+    i=0
+    while [[ $i -lt ${#extra_args[@]} ]]; do
+      arg="${extra_args[$i]}"
+      if [[ "$arg" == "--head" ]]; then
+        head_count="${extra_args[$((i+1))]:-}"
+        if ! [[ "$head_count" =~ ^[0-9]+$ ]]; then
+          echo "sys: --head 뒤에 숫자가 필요해요 (예: --head 100)" >&2
+          exit 1
+        fi
+        ((i+=2))
+        continue
+      fi
+      filtered_args+=("$arg")
+      ((i++))
+    done
+
+    if [[ -n "$head_count" ]]; then
+      # snapshot 모드: -f 없이, 앞에서부터 N줄만
+      if command -v ccze >/dev/null 2>&1; then
+        $use_sudo journalctl $scope_flag -o cat --no-pager -u "$match" "${filtered_args[@]}" 2>/dev/null | head -n "$head_count" | ccze -A
+      else
+        $use_sudo journalctl $scope_flag -o cat --no-pager -u "$match" "${filtered_args[@]}" 2>/dev/null | head -n "$head_count"
+      fi
     else
-      $use_sudo journalctl $scope_flag -f -u "$match"
+      # 기본 모드: -f 실시간 tail
+      if command -v ccze >/dev/null 2>&1; then
+        $use_sudo journalctl $scope_flag -o cat -f -u "$match" "${filtered_args[@]}" | ccze -A
+      else
+        $use_sudo journalctl $scope_flag -o cat -f -u "$match" "${filtered_args[@]}"
+      fi
     fi
     ;;
   enable)     $use_sudo systemctl $scope_flag enable "$match" ;;
