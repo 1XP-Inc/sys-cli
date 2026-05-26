@@ -1,6 +1,6 @@
 # sys-cli
 
-PM2 스타일로 systemd 서비스를 관리하는 CLI 도구.
+systemd 서비스를 간편하게 관리하는 CLI 도구.
 
 user service와 system service를 자동으로 감지하고, 번호 ID로 짧게 다루기를 지원합니다.
 
