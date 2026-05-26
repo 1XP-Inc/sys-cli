@@ -121,8 +121,9 @@ print_section() {
 
   # 헤더와 행의 컬럼 폭을 정확히 일치시켜야 시각적으로 정렬됨.
   # SUB 는 8자로 타이트하게 (running/exited/dead/failed 모두 fit).
+  # BOOT 헤더는 " BOOT " 로 가운데 정렬 (마커도 같은 위치에 옴).
   printf "  %3s %-32s %-9s %-10s %-8s %-6s %s\n" \
-    "ID" "UNIT" "LOAD" "ACTIVE" "SUB" "BOOT" "DESCRIPTION"
+    "ID" "UNIT" "LOAD" "ACTIVE" "SUB" " BOOT " "DESCRIPTION"
 
   # 행
   local unit boot_marker active_val sub_val c_active c_sub c_boot
@@ -159,9 +160,12 @@ print_section() {
 
     # ANSI 코드는 시각폭 0 이지만 printf %-Ns 는 바이트로 패딩하므로,
     # 먼저 평문으로 정확한 폭만큼 패딩한 뒤 색을 입혀야 정렬이 안 깨짐.
+    # BOOT 마커는 ✓/✗ 가 UTF-8 3바이트라 printf 폭 계산이 어긋남
+    # → 항상 화면상 1글자임을 알고 있으니 수동으로 " BOOT " 헤더 가운데에
+    #   오도록 "  ✓   " (2 + 1 + 3 = 화면상 6칸) 형태로 만든다.
     printf -v active_padded "%-10s" "$active_val"
     printf -v sub_padded    "%-8s"  "$sub_val"
-    printf -v boot_padded   "%-6s"  "$boot_marker"
+    boot_padded="  ${boot_marker}   "
 
     printf "  %2d) %-32s %-9s %s%s%s %s%s%s %s%s%s %s\n" \
       "$IDX" "$unit" \
