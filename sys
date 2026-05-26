@@ -15,6 +15,20 @@ CONFIG_FILE="${HOME}/.config/sys-cli/config"
 # → 여러 셸에서 동시에 sys ls 를 실행해도 서로의 번호가 섞이지 않음.
 SYS_STATE="${SYS_STATE_DIR}/map-${PPID}"
 
+# 색상: stdout 이 터미널일 때만 활성화 (pipe/redirect 시 끔).
+# NO_COLOR 환경변수가 있으면 강제로 끔 (표준: https://no-color.org).
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  C_RED=$'\033[31m'
+  C_GREEN=$'\033[32m'
+  C_YELLOW=$'\033[33m'
+  C_RESET=$'\033[0m'
+else
+  C_RED=""
+  C_GREEN=""
+  C_YELLOW=""
+  C_RESET=""
+fi
+
 sys_help() {
   echo "sys - systemd 서비스 관리 도우미 (user/system 자동 감지)"
   echo ""
@@ -105,29 +119,56 @@ print_section() {
     esac
   done <<< "$show_out"
 
-  # 헤더
-  printf "  %3s %-32s %-9s %-10s %-12s %-4s %s\n" \
+  # 헤더와 행의 컬럼 폭을 정확히 일치시켜야 시각적으로 정렬됨.
+  # SUB 는 8자로 타이트하게 (running/exited/dead/failed 모두 fit).
+  printf "  %3s %-32s %-9s %-10s %-8s %-4s %s\n" \
     "ID" "UNIT" "LOAD" "ACTIVE" "SUB" "BOOT" "DESCRIPTION"
 
   # 행
-  local unit boot_marker
+  local unit boot_marker active_val sub_val c_active c_sub c_boot
+  local active_padded sub_padded boot_padded
   for s in "${services[@]}"; do
     echo "$s" >> "$SYS_STATE_TMP"
     unit="${s}.service"
-    # UnitFileState 값 → ✓/✗/- 매핑
-    # enabled-runtime, alias 는 사실상 enabled 와 같은 효과 → ✓
-    # static, masked, indirect, generated 등은 BOOT 개념 밖 → -
+    active_val="${active_state[$unit]:-?}"
+    sub_val="${sub_state[$unit]:-?}"
+
+    # UnitFileState 값 → ✓/✗/- 매핑 + BOOT 색상
     case "${file_state[$unit]:-}" in
-      enabled|enabled-runtime|alias) boot_marker="✓" ;;
-      disabled)                      boot_marker="✗" ;;
-      *)                             boot_marker="-" ;;
+      enabled|enabled-runtime|alias) boot_marker="✓"; c_boot="$C_GREEN" ;;
+      disabled)                      boot_marker="✗"; c_boot="$C_RED" ;;
+      *)                             boot_marker="-"; c_boot="" ;;
     esac
-    printf "  %2d) %-32s %-9s %-10s %-12s  %s   %s\n" \
+
+    # ACTIVE 색상
+    case "$active_val" in
+      active)                            c_active="$C_GREEN" ;;
+      activating|deactivating|reloading) c_active="$C_YELLOW" ;;
+      failed|inactive)                   c_active="$C_RED" ;;
+      *)                                 c_active="" ;;
+    esac
+
+    # SUB 색상
+    case "$sub_val" in
+      running)                                            c_sub="$C_GREEN" ;;
+      start-pre|start|start-post|reload|auto-restart)     c_sub="$C_YELLOW" ;;
+      stop-pre|stop|stop-post|stop-sigterm|stop-sigkill)  c_sub="$C_YELLOW" ;;
+      failed|dead|exited)                                 c_sub="$C_RED" ;;
+      *)                                                  c_sub="" ;;
+    esac
+
+    # ANSI 코드는 시각폭 0 이지만 printf %-Ns 는 바이트로 패딩하므로,
+    # 먼저 평문으로 정확한 폭만큼 패딩한 뒤 색을 입혀야 정렬이 안 깨짐.
+    printf -v active_padded "%-10s" "$active_val"
+    printf -v sub_padded    "%-8s"  "$sub_val"
+    printf -v boot_padded   "%-4s"  "$boot_marker"
+
+    printf "  %2d) %-32s %-9s %s%s%s %s%s%s %s%s%s %s\n" \
       "$IDX" "$unit" \
       "${load_state[$unit]:-?}" \
-      "${active_state[$unit]:-?}" \
-      "${sub_state[$unit]:-?}" \
-      "$boot_marker" \
+      "$c_active" "$active_padded" "$C_RESET" \
+      "$c_sub"    "$sub_padded"    "$C_RESET" \
+      "$c_boot"   "$boot_padded"   "$C_RESET" \
       "${description[$unit]:-}"
     ((IDX++))
   done
