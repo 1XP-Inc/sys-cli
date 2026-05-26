@@ -44,6 +44,9 @@ COMMANDS:
     restart, r         서비스 재시작
     enable             부팅 시 자동 시작 등록
     disable            부팅 시 자동 시작 해제
+    delete, del, rm    sys ls 목록에서 제거 (USER는 파일까지, SYS_WATCH는 항목만)
+    cat                .service 파일 내용 출력 (읽기 전용)
+    edit               .service 파일 편집 (편집 전 .bak 자동 백업)
     daemon             .service 파일 수정 후 systemd 재로딩
     help, -h, --help   도움말 출력
 ```
@@ -63,6 +66,9 @@ sys restart execution       # execution 재시작
 sys restart 2               # 2번 서비스 재시작
 sys log consensus           # consensus 실시간 로그 tail
 sys log 1                   # 1번 서비스 로그
+sys cat consensus           # .service 파일 내용 보기 (읽기 전용)
+sys edit consensus          # .service 파일 편집 (편집 전 .bak 자동 백업)
+sys delete consensus        # sys ls 목록에서 제거
 sys daemon                  # .service 파일 수정 후 reload
 ```
 
@@ -134,6 +140,21 @@ system service는 한 머신에 수십~수백 개가 있어서 다 보여줄 수
 | user service만 | `SYS_WATCH=()` | USER SERVICES만 자동 표시 |
 | user + 모니터링 system service | `SYS_WATCH=(prometheus ...)` | 둘 다 표시 |
 | 전부 system service | user 디렉토리 비어있음 + `SYS_WATCH=(...)` | SYSTEM SERVICES만 표시 |
+
+### 출력 컬럼
+
+`sys ls` 결과는 각 서비스마다 한 줄로 다음 컬럼들이 표시됩니다:
+
+| 컬럼 | 의미 | 자주 보이는 값 |
+|---|---|---|
+| `UNIT` | 서비스 파일 이름 | `myapp.service` |
+| `LOAD` | systemd가 unit 파일을 잘 읽었는지 | `loaded` / `not-found` / `masked` / `error` |
+| `ACTIVE` | 큰 분류 상태 | `active` / `inactive` / `failed` / `activating` |
+| `SUB` | 세부 상태 (타입마다 다름) | `running` / `exited` / `dead` / `failed` |
+| `BOOT` | 재부팅 시 자동 시작 여부 | ✓ `enabled` / ✗ `disabled` / `-` 그 외 |
+| `DESCRIPTION` | unit 파일의 `Description=` 값 | 사람이 알아보라고 적어둔 설명 |
+
+같은 표가 `sys ls` 출력 하단에도 짧게 함께 나오므로, 명령어를 따로 외울 필요는 없습니다.
 
 ## user service 만드는 법
 

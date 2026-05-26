@@ -5,11 +5,15 @@
 
 # 기본 설정
 SYS_WATCH=()
-SYS_STATE="${HOME}/.cache/sys-services"
+SYS_STATE_DIR="${HOME}/.cache/sys-cli"
 
 # 사용자 설정 파일이 있으면 override
 CONFIG_FILE="${HOME}/.config/sys-cli/config"
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+
+# 번호 ↔ 서비스명 매핑은 셸(PPID)별로 분리해서 저장한다.
+# → 여러 셸에서 동시에 sys ls 를 실행해도 서로의 번호가 섞이지 않음.
+SYS_STATE="${SYS_STATE_DIR}/map-${PPID}"
 
 sys_help() {
   echo "sys - systemd 서비스 관리 도우미 (user/system 자동 감지)"
@@ -26,22 +30,30 @@ sys_help() {
   echo "    restart, r         서비스 재시작"
   echo "    enable             부팅 시 자동 시작 등록"
   echo "    disable            부팅 시 자동 시작 해제"
+  echo "    delete, del, rm    sys ls 목록에서 제거 (USER는 파일까지, SYS_WATCH는 항목만)"
+  echo "    cat                .service 파일 내용 출력 (읽기 전용)"
+  echo "    edit               .service 파일 편집 (편집 전 .bak 자동 백업)"
   echo "    daemon             .service 파일 수정 후 systemd 재로딩"
   echo "    help, -h, --help   이 도움말 출력"
   echo ""
-  echo "NAME 자리에 ID 숫자도 사용 가능 (sys ls의 번호)"
+  echo "UNIT 자리에 ID 숫자도 사용 가능 (sys ls의 번호)"
   echo "    예: sys status 1   → sys ls의 1번 서비스 상태"
+  echo "    번호 ID는 셸마다 따로 관리되니, 각 셸에서 'sys ls'를 먼저 실행하세요."
   echo ""
   echo "EXAMPLES:"
-  echo "    sys ls                                # 전체 서비스 목록"
-  echo "    sys status <UNIT or ID#>               # 단일 서비스 상태"
-  echo "    sys status 1                          # 1번 서비스 상태"
-  echo "    sys restart <UNIT or ID#>                 # 단일 서비스 재시작"
-  echo "    sys log <UNIT or ID#>                  # 실시간 로그 tail"
-  echo "    sys log <UNIT or ID#> -n 100           # 최근 100줄부터 tail"
-  echo "    sys log <UNIT or ID#> --head 100       # 시작부터 100줄 (스냅샷)"
-  echo "    sys log <UNIT or ID#> -n 100 -g ERROR  # ERROR만 필터링"
-  echo "    sys daemon                            # .service 수정 후 reload"
+  printf '    %-37s # %s\n' \
+    "sys ls"                                "전체 서비스 목록" \
+    "sys status <UNIT or ID#>"              "단일 서비스 상태" \
+    "sys status 1"                          "1번 서비스 상태" \
+    "sys restart <UNIT or ID#>"             "단일 서비스 재시작" \
+    "sys log <UNIT or ID#>"                 "실시간 로그 tail" \
+    "sys log <UNIT or ID#> -n 100"          "최근 100줄부터 tail" \
+    "sys log <UNIT or ID#> --head 100"      "시작부터 100줄 (스냅샷)" \
+    "sys log <UNIT or ID#> -n 100 -g ERROR" "ERROR만 필터링" \
+    "sys cat <UNIT or ID#>"                 ".service 파일 내용 확인" \
+    "sys edit <UNIT or ID#>"                ".service 파일 편집 (.bak 자동 백업)" \
+    "sys delete <UNIT or ID#>"              "sys ls 목록에서 제거" \
+    "sys daemon"                            ".service 수정 후 reload"
   echo ""
   echo "LOG OPTIONS:"
   echo "        -n, --lines N            마지막 N줄부터 시작 (실시간 tail 유지)"
@@ -52,7 +64,7 @@ sys_help() {
   echo "    ~/.config/sys-cli/config 에서 SYS_WATCH 등을 설정할 수 있습니다."
 }
 
-# 한 섹션 출력: 헤더 + 정렬된 데이터 + 번호 ID
+# 한 섹션 출력: 헤더 + 데이터 + 번호 ID + BOOT 마커
 # 사용법: print_section "USER SERVICES" "scope" "${services[@]}"
 # scope: "--user" 또는 "" (system)
 print_section() {
@@ -67,46 +79,56 @@ print_section() {
 
   echo "   === $title ==="
 
-  # systemctl을 한 번만 호출해서 정렬된 출력 받기
-  local output
-  output=$($use_sudo systemctl $scope list-units --all "${services[@]/%/.service}" 2>/dev/null)
-
-  # 첫 줄 = 헤더, 빈 줄 전까지가 데이터
-  local header=""
-  local -A status_lines
-  local found_empty=false
-  while IFS= read -r line; do
-    if [[ -z "$header" ]]; then
-      header="$line"
-      continue
-    fi
-    if [[ -z "${line// }" ]]; then
-      found_empty=true
-      break
-    fi
-    local name
-    name=$(echo "$line" | awk '{print $1}')
-    status_lines[$name]="$line"
-  done <<< "$output"
-
-  # 헤더 출력 (ID 컬럼 추가)
-  if [[ -n "$header" ]]; then
-    local header_stripped="${header#  }"
-    printf "  %3s %s\n" "ID" "$header_stripped"
-  fi
-
-  # 데이터 출력 (번호 + systemctl 정렬된 라인)
-  local s line line_stripped unit
+  # systemctl show 한 번으로 모든 서비스의 속성을 받아온다.
+  # → unit 마다 systemctl 을 띄우면 N번 fork 가 발생해서 느려짐.
+  local units=() s
   for s in "${services[@]}"; do
-    echo "$s" >> "$SYS_STATE"
+    units+=("${s}.service")
+  done
+
+  local show_out
+  show_out=$($use_sudo systemctl $scope show \
+    --property=Id,LoadState,ActiveState,SubState,UnitFileState,Description \
+    -- "${units[@]}" 2>/dev/null)
+
+  local -A load_state active_state sub_state file_state description
+  local current_id=""
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      Id=*)            current_id="${line#Id=}" ;;
+      LoadState=*)     load_state[$current_id]="${line#LoadState=}" ;;
+      ActiveState=*)   active_state[$current_id]="${line#ActiveState=}" ;;
+      SubState=*)      sub_state[$current_id]="${line#SubState=}" ;;
+      UnitFileState=*) file_state[$current_id]="${line#UnitFileState=}" ;;
+      Description=*)   description[$current_id]="${line#Description=}" ;;
+    esac
+  done <<< "$show_out"
+
+  # 헤더
+  printf "  %3s %-32s %-9s %-10s %-12s %-4s %s\n" \
+    "ID" "UNIT" "LOAD" "ACTIVE" "SUB" "BOOT" "DESCRIPTION"
+
+  # 행
+  local unit boot_marker
+  for s in "${services[@]}"; do
+    echo "$s" >> "$SYS_STATE_TMP"
     unit="${s}.service"
-    line="${status_lines[$unit]:-}"
-    if [[ -n "$line" ]]; then
-      line_stripped="${line#  }"
-      printf "  %2d) %s\n" "$IDX" "$line_stripped"
-    else
-      printf "  %2d) %s.service (not loaded)\n" "$IDX" "$s"
-    fi
+    # UnitFileState 값 → ✓/✗/- 매핑
+    # enabled-runtime, alias 는 사실상 enabled 와 같은 효과 → ✓
+    # static, masked, indirect, generated 등은 BOOT 개념 밖 → -
+    case "${file_state[$unit]:-}" in
+      enabled|enabled-runtime|alias) boot_marker="✓" ;;
+      disabled)                      boot_marker="✗" ;;
+      *)                             boot_marker="-" ;;
+    esac
+    printf "  %2d) %-32s %-9s %-10s %-12s  %s   %s\n" \
+      "$IDX" "$unit" \
+      "${load_state[$unit]:-?}" \
+      "${active_state[$unit]:-?}" \
+      "${sub_state[$unit]:-?}" \
+      "$boot_marker" \
+      "${description[$unit]:-}"
     ((IDX++))
   done
 
@@ -123,8 +145,19 @@ fi
 
 # ls는 target 처리 없이 바로
 if [[ "$cmd" == "l" || "$cmd" == "ls" || "$cmd" == "list" ]]; then
-  mkdir -p "$(dirname "$SYS_STATE")"
-  > "$SYS_STATE"
+  mkdir -p "$SYS_STATE_DIR"
+
+  # 이미 종료된 셸이 남긴 매핑 파일 정리 (PID가 살아있지 않으면 삭제)
+  for f in "$SYS_STATE_DIR"/map-* "$SYS_STATE_DIR"/.map-*; do
+    [[ -e "$f" ]] || continue
+    pid="${f##*/map-}"; pid="${pid%%.*}"
+    [[ "$pid" =~ ^[0-9]+$ ]] && ! kill -0 "$pid" 2>/dev/null && rm -f "$f"
+  done
+
+  # 매핑을 임시 파일에 모은 뒤 mv 로 원자적 교체한다.
+  # → 쓰는 도중 다른 셸이 읽어도 항상 완전한 파일만 보게 됨 (race 방지).
+  SYS_STATE_TMP="$(mktemp "${SYS_STATE_DIR}/.map-${PPID}.XXXXXX")"
+  trap 'rm -f "$SYS_STATE_TMP"' EXIT
   IDX=1
 
   # User services (본인이 ~/.config/systemd/user/ 에 만든 것만)
@@ -137,6 +170,23 @@ if [[ "$cmd" == "l" || "$cmd" == "ls" || "$cmd" == "list" ]]; then
 
   print_section "USER SERVICES" "--user" "${user_services[@]}"
   print_section "SYSTEM SERVICES (watched)" "" "${SYS_WATCH[@]}"
+
+  mv -f "$SYS_STATE_TMP" "$SYS_STATE"
+
+  if [[ "$IDX" -eq 1 ]]; then
+    echo "표시할 서비스가 없어요."
+    echo "  - user service: ~/.config/systemd/user/ 에 .service 파일을 만드세요."
+    echo "  - system service: ~/.config/sys-cli/config 의 SYS_WATCH 에 이름을 추가하세요."
+  else
+    cat <<'EOF'
+  UNIT         service file name
+  LOAD         loaded / not-found / masked / error
+  ACTIVE       active / inactive / failed / activating
+  SUB          running / exited / dead / failed
+  BOOT         ✓ enabled / ✗ disabled / - static, masked, etc.
+  DESCRIPTION  Description= field from the unit file
+EOF
+  fi
 
   exit 0
 fi
@@ -159,7 +209,7 @@ if [[ "$target" =~ ^[0-9]+$ ]]; then
       exit 1
     fi
   else
-    echo "sys: 매핑 파일이 없어요. 'sys ls'를 먼저 실행하세요." >&2
+    echo "sys: 이 셸의 매핑이 없어요. 먼저 'sys ls'를 실행하세요." >&2
     exit 1
   fi
 fi
@@ -170,6 +220,87 @@ if [[ -z "$target" ]]; then
   echo "sys: 서비스 이름 또는 ID가 필요해요." >&2
   echo "도움말 보려면: sys --help" >&2
   exit 1
+fi
+
+# delete: sys ls 목록(USER 파일 또는 SYS_WATCH 항목)에서 제거
+# systemctl cat 검사를 우회 → SYS_WATCH 에 잘못 적힌 이름도 정리 가능
+if [[ "$cmd" == "delete" || "$cmd" == "del" || "$cmd" == "rm" ]]; then
+  user_file="$HOME/.config/systemd/user/${target}.service"
+  is_user=false
+  is_watched=false
+  [[ -f "$user_file" ]] && is_user=true
+  for w in "${SYS_WATCH[@]}"; do
+    [[ "$w" == "$target" ]] && is_watched=true && break
+  done
+
+  if ! $is_user && ! $is_watched; then
+    echo "sys: '$target' 은(는) sys ls 목록에 없어요." >&2
+    echo "  - user service 파일($user_file) 없음" >&2
+    echo "  - SYS_WATCH 에도 없음" >&2
+    exit 1
+  fi
+
+  if $is_user; then
+    echo "USER SERVICE '$target' 를 다음 순서로 제거합니다:"
+    echo "  1) systemctl --user stop $target"
+    echo "  2) systemctl --user disable $target"
+    echo "  3) rm $user_file"
+    echo "  4) systemctl --user daemon-reload"
+    read -r -p "진행할까요? [y/N]: " ans
+    [[ "$ans" =~ ^[Yy]$ ]] || { echo "취소됨."; exit 0; }
+    systemctl --user stop "$target" 2>/dev/null
+    systemctl --user disable "$target" 2>/dev/null
+    rm -f "$user_file" && echo "✓ $user_file 제거됨"
+    systemctl --user daemon-reload
+    echo "✓ 완료."
+    exit 0
+  fi
+
+  # is_watched (and not user): config 파일의 SYS_WATCH 줄만 갱신
+  # 실제 unit 파일 경로를 알려준다 (FragmentPath) → 사용자가 직접 지울 수 있게
+  unit_path=$(systemctl show -p FragmentPath --value -- "${target}.service" 2>/dev/null)
+  echo "SYS_WATCH 에서 '$target' 을(를) 제거합니다 (실제 system service 는 그대로 둠)."
+  if [[ -n "$unit_path" ]]; then
+    echo ""
+    echo "  실제 .service 파일 위치: $unit_path"
+    echo "  파일까지 완전히 제거하려면 (수동):"
+    echo "    sudo systemctl stop $target"
+    echo "    sudo systemctl disable $target"
+    echo "    sudo rm $unit_path"
+    echo "    sudo systemctl daemon-reload"
+    echo ""
+  else
+    echo "  (참고: systemd 에서 unit 파일을 못 찾았어요. 이 이름이 SYS_WATCH 에만 잘못 남아있을 수 있음.)"
+  fi
+  read -r -p "SYS_WATCH 에서만 제거 진행할까요? [y/N]: " ans
+  [[ "$ans" =~ ^[Yy]$ ]] || { echo "취소됨."; exit 0; }
+
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "sys: $CONFIG_FILE 가 없어요." >&2
+    exit 1
+  fi
+  sys_watch_line=$(grep -nE '^[[:space:]]*SYS_WATCH=' "$CONFIG_FILE" | head -1)
+  if [[ -z "$sys_watch_line" ]]; then
+    echo "sys: $CONFIG_FILE 에서 'SYS_WATCH=' 줄을 찾을 수 없어요." >&2
+    exit 1
+  fi
+  # 멀티라인 배열은 자동 편집 불가 — 같은 줄에 닫는 ')' 가 있어야 함
+  if [[ "${sys_watch_line#*:}" != *")"* ]]; then
+    echo "sys: SYS_WATCH 가 여러 줄에 걸쳐 있어서 자동 편집 불가." >&2
+    echo "    $CONFIG_FILE 를 직접 편집해서 '$target' 을(를) 빼주세요." >&2
+    exit 1
+  fi
+
+  new_list=()
+  for w in "${SYS_WATCH[@]}"; do
+    [[ "$w" != "$target" ]] && new_list+=("$w")
+  done
+  new_value="SYS_WATCH=(${new_list[*]})"
+
+  # mac/linux 모두 동작하도록 sed -i.bak 후 백업 제거
+  sed -i.bak "s|^[[:space:]]*SYS_WATCH=.*|${new_value}|" "$CONFIG_FILE" && rm -f "${CONFIG_FILE}.bak"
+  echo "✓ $CONFIG_FILE 의 SYS_WATCH 갱신: $new_value"
+  exit 0
 fi
 
 # 정확한 이름 매칭만 (user 우선, 없으면 system)
@@ -234,6 +365,23 @@ case "$cmd" in
     ;;
   enable)     $use_sudo systemctl $scope_flag enable "$match" ;;
   disable)    $use_sudo systemctl $scope_flag disable "$match" ;;
+  cat)        $use_sudo systemctl $scope_flag cat -- "$match" ;;
+  edit)
+    # 편집 전에 원본 .service 파일을 <원본>.bak 으로 복사 (직전 버전 1개만 유지)
+    unit_path=$($use_sudo systemctl $scope_flag show -p FragmentPath --value -- "${match}.service" 2>/dev/null)
+    if [[ -n "$unit_path" && -f "$unit_path" ]]; then
+      if $use_sudo cp -p "$unit_path" "${unit_path}.bak" 2>/dev/null; then
+        echo "✓ 백업: ${unit_path}.bak"
+      else
+        echo "⚠ 백업 실패: ${unit_path}.bak (계속 진행)" >&2
+      fi
+    else
+      echo "⚠ FragmentPath 를 찾지 못해 백업을 건너뜁니다." >&2
+    fi
+    # --full: drop-in override 가 아니라 원본 파일을 직접 편집
+    # systemctl edit 은 저장 후 자동으로 daemon-reload 까지 수행
+    $use_sudo systemctl $scope_flag edit --full "$match"
+    ;;
   *)
     echo "sys: 알 수 없는 명령어 '$cmd'" >&2
     echo "도움말 보려면: sys --help" >&2
