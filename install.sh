@@ -33,6 +33,15 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   echo "        export PATH=\"\$HOME/.local/bin:\$PATH\""
 fi
 
+# python3 (필수) — sys log follow 모드에서 journal JSON 필터링에 사용
+if ! command -v python3 >/dev/null 2>&1; then
+  echo ""
+  echo "⚠️  python3가 설치되어 있지 않아요."
+  echo "    sys log follow 모드가 동작하려면 python3가 필요합니다."
+  echo "    Ubuntu에서는 보통 다음으로 설치할 수 있습니다:"
+  echo "        sudo apt install -y python3"
+fi
+
 # ccze (선택) — 로그 색상화에 사용
 if ! command -v ccze >/dev/null 2>&1; then
   echo ""
