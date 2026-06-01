@@ -73,6 +73,8 @@ sys_help() {
   echo "        -n, --lines N            마지막 N줄부터 시작 (실시간 tail 유지)"
   echo "        --head N                 시작부터 N줄만 보기 (스냅샷)"
   echo "        -g, --grep PATTERN       정규식 패턴으로 필터"
+  echo "        -o/--output, -u/--unit, -f/--follow follow 모드에서는 미지원"
+  echo "        follow 모드에서는 UNIT 이름이 포함된 추가 인자 미지원"
   echo ""
   echo "CONFIG:"
   echo "    ~/.config/sys-cli/config 에서 SYS_WATCH 등을 설정할 수 있습니다."
@@ -364,6 +366,228 @@ else
   exit 1
 fi
 
+run_follow_log_without_unit_argv() {
+  local match="$1"
+  local scope_flag="$2"
+  local use_sudo="$3"
+  shift 3
+
+  local filtered_args=("$@")
+  local prelude_args=("${filtered_args[@]}")
+  local follow_args=()
+  local has_lines=false
+  local colorize=0
+  local -a prelude_cmd
+  local i arg cursor_file cursor
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "sys: 안전한 log follow 모드에는 python3가 필요해요." >&2
+    echo "     python3를 설치한 뒤 다시 실행하세요." >&2
+    exit 1
+  fi
+
+  for ((i = 0; i < ${#filtered_args[@]}; i++)); do
+    arg="${filtered_args[$i]}"
+    case "$arg" in
+      -o|--output|--output-fields)
+        echo "sys: log follow 모드에서는 output 형식 옵션($arg)을 사용할 수 없어요." >&2
+        echo "     sys가 내부적으로 journal JSON 형식을 사용해 unit 이름을 argv에서 숨깁니다." >&2
+        exit 1
+        ;;
+      -o*|--output=*|--output-fields=*)
+        echo "sys: log follow 모드에서는 output 형식 옵션($arg)을 사용할 수 없어요." >&2
+        echo "     sys가 내부적으로 journal JSON 형식을 사용해 unit 이름을 argv에서 숨깁니다." >&2
+        exit 1
+        ;;
+      -u|--unit|--unit=*|--user-unit|--user-unit=*|-u*)
+        echo "sys: log follow 모드에서는 unit 선택 옵션($arg)을 사용할 수 없어요." >&2
+        echo "     대상 unit은 'sys log <UNIT>' 인자로만 지정하세요." >&2
+        exit 1
+        ;;
+      -f|--follow)
+        echo "sys: log 명령은 기본적으로 follow 모드라서 $arg 옵션을 따로 받을 수 없어요." >&2
+        exit 1
+        ;;
+      --follow=*)
+        echo "sys: log 명령은 기본적으로 follow 모드라서 $arg 옵션을 따로 받을 수 없어요." >&2
+        exit 1
+        ;;
+    esac
+
+    if [[ "$arg" == *"$match"* || "$arg" == *"${match}.service"* ]]; then
+      echo "sys: log follow 모드에서는 unit 이름이 포함된 옵션 인자를 받을 수 없어요: $arg" >&2
+      echo "     장시간 실행되는 journalctl argv에 unit 이름이 남지 않도록 막는 보호 장치입니다." >&2
+      exit 1
+    fi
+  done
+
+  for ((i = 0; i < ${#filtered_args[@]}; i++)); do
+    arg="${filtered_args[$i]}"
+    case "$arg" in
+      -n|--lines)
+        if [[ $((i + 1)) -ge ${#filtered_args[@]} || ! "${filtered_args[$((i + 1))]}" =~ ^([0-9]+|all)$ ]]; then
+          echo "sys: $arg 뒤에는 줄 수가 필요해요 (예: -n 100)." >&2
+          exit 1
+        fi
+        has_lines=true
+        ((i++))
+        ;;
+      -n[0-9]*|--lines=*)
+        if [[ "$arg" == --lines=* && ! "${arg#--lines=}" =~ ^([0-9]+|all)$ ]]; then
+          echo "sys: --lines 뒤에는 줄 수가 필요해요 (예: --lines=100)." >&2
+          exit 1
+        fi
+        has_lines=true
+        ;;
+      -n*)
+        if [[ ! "${arg#-n}" =~ ^([0-9]+|all)$ ]]; then
+          echo "sys: -n 뒤에는 줄 수가 필요해요 (예: -n100)." >&2
+          exit 1
+        fi
+        has_lines=true
+        ;;
+      *)
+        follow_args+=("$arg")
+        ;;
+    esac
+  done
+
+  if [[ "$has_lines" != true ]]; then
+    prelude_args=(-n 10 "${prelude_args[@]}")
+  fi
+
+  if [[ "$use_sudo" == "sudo" ]]; then
+    sudo -v || exit 1
+  fi
+
+  [[ -n "$use_sudo" ]] && prelude_cmd+=("$use_sudo")
+  prelude_cmd+=(journalctl)
+  [[ -n "$scope_flag" ]] && prelude_cmd+=("$scope_flag")
+  prelude_cmd+=(-o json --no-pager -u "$match" "${prelude_args[@]}")
+
+  cursor_file="$(mktemp "${TMPDIR:-/tmp}/sys-log-cursor.XXXXXX")" || exit 1
+  "${prelude_cmd[@]}" 2>/dev/null | SYS_LOG_CURSOR_FILE="$cursor_file" python3 -c '
+import json
+import os
+import sys
+
+cursor_file = os.environ["SYS_LOG_CURSOR_FILE"]
+
+def message_text(value):
+    if isinstance(value, list):
+        return bytes(value).decode("utf-8", "replace")
+    return str(value)
+
+for line in sys.stdin:
+    try:
+        entry = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+
+    cursor = entry.get("__CURSOR")
+    message = entry.get("MESSAGE")
+    if message is None:
+        continue
+
+    sys.stdout.write(message_text(message))
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+    if cursor:
+        with open(cursor_file, "w", encoding="utf-8") as fh:
+            fh.write(cursor)
+'
+  cursor="$(sed -n '$p' "$cursor_file" 2>/dev/null)"
+  rm -f "$cursor_file"
+
+  command -v ccze >/dev/null 2>&1 && colorize=1
+
+  export SYS_LOG_UNIT="${match}.service"
+  export SYS_LOG_SCOPE="$scope_flag"
+  export SYS_LOG_USE_SUDO="$use_sudo"
+  export SYS_LOG_COLORIZE="$colorize"
+  export SYS_LOG_AFTER_CURSOR="$cursor"
+  export SYS_LOG_UID="$(id -u)"
+
+  exec -a sys-log bash -c '
+    journal_cmd=(journalctl)
+    [[ -n "${SYS_LOG_SCOPE:-}" ]] && journal_cmd+=("$SYS_LOG_SCOPE")
+    journal_cmd+=(-o json -f)
+    if [[ -n "${SYS_LOG_AFTER_CURSOR:-}" ]]; then
+      journal_cmd+=(-n all --after-cursor "$SYS_LOG_AFTER_CURSOR")
+    else
+      journal_cmd+=(-n 0)
+    fi
+    journal_cmd+=("$@")
+    [[ "${SYS_LOG_USE_SUDO:-}" == "sudo" ]] && journal_cmd=(sudo "${journal_cmd[@]}")
+
+    filter_program='\''
+import json
+import os
+import sys
+
+unit = os.environ["SYS_LOG_UNIT"]
+scope = os.environ.get("SYS_LOG_SCOPE", "")
+uid = os.environ.get("SYS_LOG_UID", "")
+coredump_message_id = "fc2e22bc6ee647b6b90729ab34a250b1"
+
+def message_text(value):
+    if isinstance(value, list):
+        return bytes(value).decode("utf-8", "replace")
+    return str(value)
+
+def matches_unit(entry):
+    if scope == "--user":
+        if entry.get("_SYSTEMD_USER_UNIT") == unit:
+            return True
+        if entry.get("USER_UNIT") == unit and entry.get("_UID") == uid:
+            return True
+        if entry.get("OBJECT_SYSTEMD_USER_UNIT") == unit and entry.get("_UID") == uid:
+            return True
+        return (
+            entry.get("COREDUMP_USER_UNIT") == unit
+            and entry.get("_UID") == uid
+            and entry.get("MESSAGE_ID") == coredump_message_id
+        )
+
+    if entry.get("_SYSTEMD_UNIT") == unit:
+        return True
+    if entry.get("UNIT") == unit and entry.get("_PID") == "1":
+        return True
+    if entry.get("OBJECT_SYSTEMD_UNIT") == unit and entry.get("_UID") == "0":
+        return True
+    return (
+        entry.get("COREDUMP_UNIT") == unit
+        and entry.get("_UID") == "0"
+        and entry.get("MESSAGE_ID") == coredump_message_id
+    )
+
+for line in sys.stdin:
+    try:
+        entry = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+
+    if not matches_unit(entry):
+        continue
+
+    message = entry.get("MESSAGE")
+    if message is None:
+        continue
+
+    sys.stdout.write(message_text(message))
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    '\''
+
+    if [[ "${SYS_LOG_COLORIZE:-0}" == "1" ]]; then
+      "${journal_cmd[@]}" | python3 -c "$filter_program" | ccze -A
+    else
+      "${journal_cmd[@]}" | python3 -c "$filter_program"
+    fi
+  ' sys-log "${follow_args[@]}"
+}
+
 case "$cmd" in
   status|st)  $use_sudo systemctl $scope_flag status "$match" ;;
   start)      $use_sudo systemctl $scope_flag start "$match" ;;
@@ -400,12 +624,9 @@ case "$cmd" in
         $use_sudo journalctl $scope_flag -o cat --no-pager -u "$match" "${filtered_args[@]}" 2>/dev/null | head -n "$head_count"
       fi
     else
-      # 기본 모드: -f 실시간 tail
-      if command -v ccze >/dev/null 2>&1; then
-        $use_sudo journalctl $scope_flag -o cat -f -u "$match" "${filtered_args[@]}" | ccze -A
-      else
-        $use_sudo journalctl $scope_flag -o cat -f -u "$match" "${filtered_args[@]}"
-      fi
+      # 기본 모드: unit 이름이 장시간 journalctl argv 에 남지 않도록 follow 구간은
+      # 전체 journal JSON stream 을 읽고 환경변수의 unit 값으로 필터링한다.
+      run_follow_log_without_unit_argv "$match" "$scope_flag" "$use_sudo" "${filtered_args[@]}"
     fi
     ;;
   enable)     $use_sudo systemctl $scope_flag enable "$match" ;;

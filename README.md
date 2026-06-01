@@ -12,6 +12,7 @@ user service와 system service를 자동으로 감지하고, 번호 ID로 짧게
 - user/system 자동 감지 (sudo 알아서 붙임)
 - `.service` 확장자 생략 가능
 - ccze 설치되어 있으면 로그에 색상 자동 적용
+- `sys log` follow 중 unit 이름이 장시간 프로세스 argv에 남지 않도록 처리
 
 ## 설치
 
@@ -93,7 +94,11 @@ sys log consensus | grep "block"      # shell pipe도 가능
 | `--head N` | 시작부터 N줄만 보기 (스냅샷, 실시간 안 함) |
 | `-g PATTERN`, `--grep PATTERN` | 정규식 패턴 필터 (case-insensitive) |
 
-`--head`를 제외한 옵션은 모두 journalctl에 그대로 전달되니, 필요하면 `--since`, `-p` 같은 journalctl 옵션도 자유롭게 사용 가능합니다. 기본적으로 `-f -o cat`이 적용되어 PM2처럼 메타데이터 없이 깔끔하게 실시간 출력됩니다 (`--head` 사용 시는 실시간 모드 꺼짐).
+`--head`를 제외한 대부분의 옵션은 journalctl에 그대로 전달되니, 필요하면 `--since`, `-p` 같은 journalctl 옵션도 자유롭게 사용 가능합니다. 기본 follow 모드는 PM2처럼 메타데이터 없이 깔끔하게 실시간 출력됩니다 (`--head` 사용 시는 실시간 모드 꺼짐). 단, follow 모드는 내부적으로 JSON 출력을 사용하므로 `-o`, `--output`, `--output-fields`, `-u`, `--unit`, `--user-unit`, `-f`, `--follow`는 지원하지 않습니다.
+
+기본 follow 모드는 최근 로그를 짧게 출력한 뒤, 장시간 떠 있는 follower에서는 unit 이름을 프로세스 argv에 남기지 않습니다. 일부 서비스가 프로세스 command line을 넓게 검색하는 경우 `journalctl -u <unit>` 자체를 같은 서비스 프로세스로 오인할 수 있기 때문입니다.
+
+같은 이유로 follow 모드에서는 추가 journalctl 옵션 인자 안에 대상 unit 이름이 직접 들어가는 경우도 거부합니다.
 
 ## 설정 (`~/.config/sys-cli/config`)
 
@@ -175,6 +180,7 @@ sudo loginctl enable-linger $USER
 
 - bash 4+
 - systemd
+- python3 — `sys log` follow 모드의 안전한 journal JSON 필터링에 사용
 - (선택) `ccze` — 로그 색상화. install.sh가 자동 설치 여부를 물어봄.
 
 ## 업데이트
