@@ -7,6 +7,14 @@
 SYS_WATCH=()
 SYS_STATE_DIR="${HOME}/.cache/sys-cli"
 
+# 자동 업데이트 기본값 (config 에서 override 가능)
+# SYS_REPO_DIR      : 클론한 저장소 경로. install.sh 가 자동으로 기록한다.
+# SYS_AUTO_UPDATE   : true/false. false 면 자동 업데이트를 끈다.
+# SYS_UPDATE_INTERVAL: 체크 주기(초). 기본 6시간. 이 주기 안에는 git 을 건드리지 않는다.
+SYS_REPO_DIR=""
+SYS_AUTO_UPDATE=true
+SYS_UPDATE_INTERVAL=21600
+
 # 사용자 설정 파일이 있으면 override
 CONFIG_FILE="${HOME}/.config/sys-cli/config"
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
@@ -182,6 +190,77 @@ print_section() {
   echo
 }
 
+# ---------------------------------------------------------------------------
+# 자동 업데이트 (sys ls 진입 시 호출)
+#
+# 동기 + 쓰로틀 방식:
+#   - 마지막 체크 후 SYS_UPDATE_INTERVAL(기본 6h) 안이면 아무것도 안 하고 즉시 반환.
+#     → 대부분의 sys ls 는 git 을 전혀 건드리지 않아 빠르다.
+#   - 주기가 지났으면 git fetch 로 원격과 비교, 새 커밋이 있으면 pull 후
+#     설치본(this script)을 atomic 하게 교체하고, 새 버전으로 re-exec 한다.
+#     → 업데이트가 "이번 실행"에 바로 반영된다.
+#
+# 실행 중인 스크립트 파일을 직접 덮어쓰면 bash 가 읽던 위치가 어긋나 깨질 수 있으므로,
+# 같은 디렉토리에 임시 파일로 쓴 뒤 mv(원자적 rename)로 교체하고 exec 로 새로 띄운다.
+# ---------------------------------------------------------------------------
+sys_auto_update() {
+  # 이미 이번 실행에서 업데이트 후 re-exec 된 경우 → 재진입 방지 (무한 루프 차단)
+  [[ -n "${SYS_SELF_UPDATED:-}" ]] && return 0
+  # 비활성화했거나 저장소 경로가 없거나 git 저장소가 아니면 조용히 패스
+  [[ "$SYS_AUTO_UPDATE" != "true" ]] && return 0
+  [[ -z "$SYS_REPO_DIR" || ! -d "$SYS_REPO_DIR/.git" ]] && return 0
+  command -v git >/dev/null 2>&1 || return 0
+
+  local stamp="${SYS_STATE_DIR}/.last_update_check"
+  local now last
+  now=$(date +%s)
+
+  # 쓰로틀: 주기 안이면 스킵
+  if [[ -f "$stamp" ]]; then
+    last=$(cat "$stamp" 2>/dev/null)
+    [[ "$last" =~ ^[0-9]+$ ]] && (( now - last < SYS_UPDATE_INTERVAL )) && return 0
+  fi
+
+  # 체크 시각을 먼저 기록한다 (네트워크 실패 시에도 매번 재시도하지 않도록).
+  mkdir -p "$SYS_STATE_DIR"
+  echo "$now" > "$stamp"
+
+  # 원격 확인 (네트워크 지연/실패는 timeout 으로 끊고 조용히 패스)
+  timeout 10 git -C "$SYS_REPO_DIR" fetch --quiet 2>/dev/null || return 0
+
+  local local_rev remote_rev
+  local_rev=$(git -C "$SYS_REPO_DIR" rev-parse HEAD 2>/dev/null)
+  remote_rev=$(git -C "$SYS_REPO_DIR" rev-parse '@{u}' 2>/dev/null)
+  # 업스트림이 없거나 이미 최신이면 종료
+  [[ -z "$remote_rev" || "$local_rev" == "$remote_rev" ]] && return 0
+
+  # fast-forward pull (저장소에 로컬 수정이 있으면 실패 → 경고만)
+  if ! git -C "$SYS_REPO_DIR" pull --quiet --ff-only 2>/dev/null; then
+    echo "⚠️  sys 자동 업데이트 실패: $SYS_REPO_DIR 에서 직접 git pull 하세요." >&2
+    return 0
+  fi
+
+  # 설치본 경로 = 현재 실행 중인 파일
+  local self="$0"
+  case "$self" in
+    /*) ;;
+    *)  self="$(command -v sys 2>/dev/null || echo "$HOME/.local/bin/sys")" ;;
+  esac
+
+  # atomic 교체: 같은 디렉토리에 temp 로 쓴 뒤 mv
+  local tmp
+  tmp="$(mktemp "${self}.XXXXXX" 2>/dev/null)" || return 0
+  if cp "$SYS_REPO_DIR/sys" "$tmp" 2>/dev/null && chmod +x "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$self" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  else
+    rm -f "$tmp"
+    return 0
+  fi
+
+  echo "✨ sys 업데이트됨 → 새 버전으로 다시 실행합니다." >&2
+  SYS_SELF_UPDATED=1 exec "$self" "$@"
+}
+
 cmd="$1"
 target="$2"
 
@@ -192,6 +271,9 @@ fi
 
 # ls는 target 처리 없이 바로
 if [[ "$cmd" == "l" || "$cmd" == "ls" || "$cmd" == "list" ]]; then
+  # 6시간마다 한 번 git pull 로 자동 업데이트 (새 버전이면 re-exec 됨)
+  sys_auto_update "$@"
+
   mkdir -p "$SYS_STATE_DIR"
 
   # 이미 종료된 셸이 남긴 매핑 파일 정리 (PID가 살아있지 않으면 삭제)
