@@ -13,6 +13,8 @@ user service와 system service를 자동으로 감지하고, 번호 ID로 짧게
 - `.service` 확장자 생략 가능
 - ccze 설치되어 있으면 로그에 색상 자동 적용
 - `sys log` follow 중 unit 이름이 장시간 프로세스 argv에 남지 않도록 처리
+- `sys log` follow 중 `q` + Enter 또는 Ctrl+C로 종료 (Ctrl 키 없는 핸드폰/웹터미널 대응)
+- `sys ls` 실행 시 6시간마다 자동으로 최신 버전을 받아옴 (수동 업데이트 거의 불필요)
 
 ## 설치
 
@@ -27,7 +29,7 @@ cd ~/sys-cli
 - 기본 설정: `~/.config/sys-cli/config`
 - (선택) ccze 미설치 시 자동 설치 여부를 물어봅니다
 
-설치 후엔 클론한 폴더를 옮기거나 지워도 명령어는 계속 동작합니다.
+설치 후에도 **클론한 폴더는 남겨두세요.** `sys ls`가 그 폴더에서 자동 업데이트(`git pull`)를 수행합니다. 폴더를 옮겼다면 그 위치에서 `install.sh`를 다시 실행하면 경로가 갱신됩니다. (자동 업데이트를 끄면 폴더를 지워도 됩니다 — [자동 업데이트](#자동-업데이트) 참고.)
 
 `~/.local/bin`이 `PATH`에 없다면 install.sh가 알려줍니다. 일반적으로 Ubuntu의 `~/.profile`이 자동으로 추가하므로 새 터미널을 열면 바로 됩니다.
 
@@ -39,7 +41,7 @@ sys <COMMAND> [NAME|ID]
 COMMANDS:
     start              서비스 시작
     stop               서비스 정지
-    log, logs          실시간 로그 따라가기 (journalctl -f)
+    log, logs          실시간 로그 따라가기 (journalctl -f, q+Enter 또는 Ctrl+C로 종료)
     l, ls, list        서비스 목록 (번호 매겨서 표시)
     status, st         서비스 상태 + 최근 로그
     restart, r         서비스 재시작
@@ -100,6 +102,10 @@ sys log consensus | grep "block"      # shell pipe도 가능
 
 같은 이유로 follow 모드에서는 추가 journalctl 옵션 인자 안에 대상 unit 이름이 직접 들어가는 경우도 거부합니다.
 
+#### 로그에서 빠져나오기
+
+실시간 follow 중에는 **`q` + Enter** 또는 **Ctrl+C**로 종료할 수 있습니다. Ctrl 키가 없는 핸드폰/웹 기반 터미널에서도 `q`만 입력하면 빠져나옵니다. (`--head` 스냅샷 모드는 N줄 출력 후 자동 종료되므로 별도 종료가 필요 없습니다.)
+
 ## 설정 (`~/.config/sys-cli/config`)
 
 설치 시 자동 생성되는 설정 파일에서 동작을 커스터마이즈할 수 있습니다.
@@ -118,6 +124,11 @@ nano ~/.config/sys-cli/config
 
 # sys ls 에서 함께 표시할 system service들 (user service는 자동 표시)
 SYS_WATCH=(prometheus grafana-server node_exporter)
+
+# 자동 업데이트 (아래 "자동 업데이트" 참고)
+SYS_AUTO_UPDATE=true        # false 로 두면 자동 업데이트 끔
+SYS_UPDATE_INTERVAL=21600   # 체크 주기(초). 기본 21600 = 6시간
+# SYS_REPO_DIR 은 install.sh 가 자동으로 기록하므로 직접 건드릴 필요 없음
 ```
 
 저장 후 별도의 source/reload 없이 다음 `sys` 명령 실행 시 바로 반영됩니다.
@@ -183,7 +194,25 @@ sudo loginctl enable-linger $USER
 - python3 — `sys log` follow 모드의 안전한 journal JSON 필터링에 사용
 - (선택) `ccze` — 로그 색상화. install.sh가 자동 설치 여부를 물어봄.
 
-## 업데이트
+## 자동 업데이트
+
+`sys ls`를 실행할 때 **6시간마다 한 번** 클론한 저장소에서 `git pull` 해서 `sys`를 최신으로 갱신합니다 (동기 + 쓰로틀 방식). 새 버전이 있으면 그 실행에 바로 반영되고, 주기 안의 나머지 실행은 `git`을 건드리지 않아 빠릅니다.
+
+- 동작 조건: 클론한 저장소 폴더가 그대로 남아 있어야 하고, 설치본(`~/.local/bin/sys`)에 자동 업데이트 기능이 들어 있어야 합니다. **이 기능이 추가되기 전 버전에서 올라오는 경우, 한 번은 수동으로 `git pull && ./install.sh`를 실행해 자동 업데이터를 설치해야 합니다.** 그 이후로는 자동입니다.
+- 끄기 / 주기 변경: 설정 파일에서 `SYS_AUTO_UPDATE=false` 또는 `SYS_UPDATE_INTERVAL=<초>`.
+- 범위: 자동 업데이트는 `sys` 스크립트만 교체합니다. `install.sh`나 설정 항목(config) 자체가 바뀌는 변경은 자동 반영되지 않으니, 그때는 아래 수동 업데이트가 필요합니다.
+
+확인: 설치본에 자동 업데이터가 들어 있는지 보려면
+
+```bash
+grep -c sys_auto_update ~/.local/bin/sys && grep SYS_REPO_DIR ~/.config/sys-cli/config
+```
+
+둘 다 출력되면 자동 업데이트가 켜져 있는 상태입니다.
+
+## 수동 업데이트
+
+자동 업데이트를 껐거나, `install.sh`/설정 구조가 바뀌는 변경을 받을 때:
 
 ```bash
 cd ~/sys-cli
