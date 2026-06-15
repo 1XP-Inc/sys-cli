@@ -46,7 +46,7 @@ sys_help() {
   echo "COMMANDS:"
   echo "    start              서비스 시작"
   echo "    stop               서비스 정지"
-  echo "    log, logs          실시간 로그 따라가기 (journalctl -f)"
+  echo "    log, logs          실시간 로그 따라가기 (journalctl -f, q+Enter 또는 Ctrl+C로 종료)"
   echo "    l, ls, list        서비스 목록 (번호 매겨서 표시)"
   echo "    status, st         서비스 상태 + 최근 로그"
   echo "    restart, r         서비스 재시작"
@@ -83,6 +83,9 @@ sys_help() {
   echo "        -g, --grep PATTERN       정규식 패턴으로 필터"
   echo "        -o/--output, -u/--unit, -f/--follow follow 모드에서는 미지원"
   echo "        follow 모드에서는 UNIT 이름이 포함된 추가 인자 미지원"
+  echo ""
+  echo "    실시간 tail 중에는 q + Enter 로 종료할 수 있습니다 (Ctrl 키 없는"
+  echo "    핸드폰/웹터미널 대응). Ctrl+C 도 그대로 동작합니다."
   echo ""
   echo "CONFIG:"
   echo "    ~/.config/sys-cli/config 에서 SYS_WATCH 등을 설정할 수 있습니다."
@@ -662,10 +665,52 @@ for line in sys.stdin:
     sys.stdout.flush()
     '\''
 
-    if [[ "${SYS_LOG_COLORIZE:-0}" == "1" ]]; then
-      "${journal_cmd[@]}" | python3 -c "$filter_program" | ccze -A
+    run_pipeline_fg() {
+      if [[ "${SYS_LOG_COLORIZE:-0}" == "1" ]]; then
+        "${journal_cmd[@]}" | python3 -c "$filter_program" | ccze -A
+      else
+        "${journal_cmd[@]}" | python3 -c "$filter_program"
+      fi
+    }
+
+    if [[ -t 0 ]]; then
+      # Ctrl 키 없는 환경(핸드폰/웹터미널) 대응: q + Enter 로도 종료할 수 있게 한다.
+      # (Ctrl+C 도 그대로 동작 — 터미널 SIGINT 가 같은 프로세스 그룹 전체로 전달됨)
+      #
+      # journalctl 을 백그라운드로 띄우고 stdin 에서 q 를 감시한다. 필터/ccze 는
+      # process substitution(> >(...))으로 연결해야 $! 가 journalctl 이라 직접 종료 가능.
+      # journalctl 의 stdin 은 /dev/null 로 막아 사용자의 q 입력이 새지 않게 한다.
+      if [[ "${SYS_LOG_COLORIZE:-0}" == "1" ]]; then
+        "${journal_cmd[@]}" </dev/null > >(python3 -c "$filter_program" | ccze -A) &
+      else
+        "${journal_cmd[@]}" </dev/null > >(python3 -c "$filter_program") &
+      fi
+      sys_log_pid=$!
+
+      # 종료 정리: sudo(시스템 서비스)로 띄운 경우 root 프로세스라 sudo kill 필요.
+      stop_follow() {
+        if [[ "${SYS_LOG_USE_SUDO:-}" == "sudo" ]]; then
+          sudo kill "$sys_log_pid" 2>/dev/null
+        else
+          kill "$sys_log_pid" 2>/dev/null
+        fi
+        wait "$sys_log_pid" 2>/dev/null
+      }
+      trap "stop_follow; exit 0" INT TERM
+
+      echo "  ── 종료: q + Enter (또는 Ctrl+C) ──" >&2
+
+      # journalctl 이 살아있는 동안 1초 타임아웃으로 입력을 폴링.
+      # q 가 들어오면 종료, journalctl 이 스스로 끝나도(kill -0 실패) 루프 탈출.
+      while kill -0 "$sys_log_pid" 2>/dev/null; do
+        if IFS= read -t 1 -r reply; then
+          [[ "$reply" == [qQ] ]] && break
+        fi
+      done
+      stop_follow
     else
-      "${journal_cmd[@]}" | python3 -c "$filter_program"
+      # 비-TTY(파이프/리다이렉트): q 입력을 받을 수 없으므로 기존처럼 그대로 흘려보낸다.
+      run_pipeline_fg
     fi
   ' sys-log "${follow_args[@]}"
 }
