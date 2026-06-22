@@ -554,7 +554,12 @@ run_follow_log_without_unit_argv() {
   "${prelude_cmd[@]}" 2>/dev/null | SYS_LOG_CURSOR_FILE="$cursor_file" python3 -c '
 import json
 import os
+import signal
 import sys
+
+# Ctrl+C(SIGINT)는 상위 bash 가 처리하도록 무시한다. 그러면 journalctl 이 죽어
+# stdin 이 EOF 가 되며 파이썬도 조용히 종료된다 (KeyboardInterrupt 트레이스백 방지).
+signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 cursor_file = os.environ["SYS_LOG_CURSOR_FILE"]
 
@@ -609,7 +614,12 @@ for line in sys.stdin:
     filter_program='\''
 import json
 import os
+import signal
 import sys
+
+# Ctrl+C(SIGINT)는 상위 bash 가 처리하도록 무시한다. 그러면 journalctl 이 죽어
+# stdin 이 EOF 가 되며 파이썬도 조용히 종료된다 (KeyboardInterrupt 트레이스백 방지).
+signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 unit = os.environ["SYS_LOG_UNIT"]
 scope = os.environ.get("SYS_LOG_SCOPE", "")
