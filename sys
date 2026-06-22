@@ -60,7 +60,8 @@ sys_help() {
   echo ""
   echo "UNIT 자리에 ID 숫자도 사용 가능 (sys ls의 번호)"
   echo "    예: sys status 1   → sys ls의 1번 서비스 상태"
-  echo "    번호 ID는 셸마다 따로 관리되니, 각 셸에서 'sys ls'를 먼저 실행하세요."
+  echo "    번호는 'sys ls' 표시 순서와 동일하며, 어느 셸에서든 바로 사용할 수 있어요"
+  echo "    (마지막으로 본 'sys ls' 목록과 다르면 'sys ls'로 다시 확인하세요)."
   echo ""
   echo "EXAMPLES:"
   printf '    %-37s # %s\n' \
@@ -89,6 +90,28 @@ sys_help() {
   echo ""
   echo "CONFIG:"
   echo "    ~/.config/sys-cli/config 에서 SYS_WATCH 등을 설정할 수 있습니다."
+}
+
+# user service 목록 (~/.config/systemd/user/*.service). glob 정렬 순서.
+list_user_services() {
+  local f
+  if [[ -d "$HOME/.config/systemd/user" ]]; then
+    for f in "$HOME/.config/systemd/user"/*.service; do
+      [[ -e "$f" ]] && basename "$f" .service
+    done
+  fi
+}
+
+# 번호 ID ↔ 서비스명 매핑의 단일 출처(single source of truth).
+# sys ls 표시 순서와 동일: USER service 먼저, 그다음 SYS_WATCH(config 순서).
+# 목록이 파일/config 에서 결정적으로 정해지므로, sys ls 를 먼저 돌리지 않아도
+# 이 함수로 같은 번호 매핑을 언제든 재현할 수 있다.
+build_service_list() {
+  list_user_services
+  local s
+  for s in "${SYS_WATCH[@]}"; do
+    printf '%s\n' "$s"
+  done
 }
 
 # 한 섹션 출력: 헤더 + 데이터 + 번호 ID + BOOT 마커
@@ -294,11 +317,9 @@ if [[ "$cmd" == "l" || "$cmd" == "ls" || "$cmd" == "list" ]]; then
 
   # User services (본인이 ~/.config/systemd/user/ 에 만든 것만)
   user_services=()
-  if [[ -d "$HOME/.config/systemd/user" ]]; then
-    for f in "$HOME/.config/systemd/user"/*.service; do
-      [[ -e "$f" ]] && user_services+=("$(basename "$f" .service)")
-    done
-  fi
+  while IFS= read -r svc; do
+    user_services+=("$svc")
+  done < <(list_user_services)
 
   print_section "USER SERVICES" "--user" "${user_services[@]}"
   print_section "SYSTEM SERVICES (watched)" "" "${SYS_WATCH[@]}"
@@ -330,18 +351,19 @@ if [[ "$cmd" == "daemon" ]]; then
   exit 0
 fi
 
-# 숫자면 매핑 파일에서 이름 찾기
+# 숫자면 이름으로 변환.
+# 1) sys ls 가 남긴 셸별 매핑 파일이 있으면 그 스냅샷을 우선 사용 (사용자가 본 그대로).
+# 2) 없거나 해당 번호가 비어있으면 현재 목록에서 즉석 계산 → sys ls 를 먼저
+#    돌리지 않은 새 셸에서도 ID 가 그대로 동작한다.
 if [[ "$target" =~ ^[0-9]+$ ]]; then
-  if [[ -f "$SYS_STATE" ]]; then
-    resolved=$(sed -n "${target}p" "$SYS_STATE")
-    if [[ -n "$resolved" ]]; then
-      target="$resolved"
-    else
-      echo "sys: ID $target에 해당하는 서비스가 없어요. 'sys ls'로 번호 다시 확인하세요." >&2
-      exit 1
-    fi
+  resolved=""
+  [[ -f "$SYS_STATE" ]] && resolved=$(sed -n "${target}p" "$SYS_STATE")
+  [[ -z "$resolved" ]] && resolved=$(build_service_list | sed -n "${target}p")
+
+  if [[ -n "$resolved" ]]; then
+    target="$resolved"
   else
-    echo "sys: 이 셸의 매핑이 없어요. 먼저 'sys ls'를 실행하세요." >&2
+    echo "sys: ID $target에 해당하는 서비스가 없어요. 'sys ls'로 번호 다시 확인하세요." >&2
     exit 1
   fi
 fi
